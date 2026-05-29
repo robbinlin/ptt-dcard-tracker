@@ -261,6 +261,66 @@ def reload_dcard_cookies():
     return {"message": "Dcard cookie 已重新載入"}
 
 
+# ── 文字雲資料 ──────────────────────────────────────────────────────────────
+
+_STOP_WORDS = {
+    "的", "了", "在", "是", "我", "有", "和", "就", "不", "人", "都", "一", "一個",
+    "上", "也", "很", "到", "說", "要", "去", "你", "會", "著", "沒有", "看", "好",
+    "自己", "這", "那", "來", "他", "她", "它", "們", "跟", "與", "及", "或", "但",
+    "因為", "所以", "如果", "雖然", "已經", "可以", "這個", "那個", "什麼", "怎麼",
+    "Re", "re", "Fw", "fw", "討論", "問卦", "新聞", "公告", "轉錄", "分享", "請問",
+}
+
+
+@router.get("/wordcloud-data", tags=["文字雲"])
+def wordcloud_data(
+    hours: int = Query(1440, description="統計最近 N 小時"),
+    limit: int = Query(80, description="最多回傳幾個詞"),
+    db: Session = Depends(get_db),
+):
+    """從文章標題提取高頻詞，供文字雲使用"""
+    import jieba
+    from collections import Counter
+
+    cutoff = datetime.fromtimestamp(
+        datetime.now(timezone.utc).timestamp() - hours * 3600, tz=timezone.utc
+    )
+    current_kws = settings.default_keywords
+
+    articles = (
+        db.query(Article.title)
+        .join(KeywordMatch, KeywordMatch.article_id == Article.id)
+        .filter(
+            KeywordMatch.keyword.in_(current_kws),
+            Article.crawled_at >= cutoff,
+        )
+        .distinct()
+        .all()
+    )
+
+    counter: Counter = Counter()
+    for (title,) in articles:
+        words = jieba.cut(title, cut_all=False)
+        for w in words:
+            w = w.strip()
+            if len(w) >= 2 and w not in _STOP_WORDS:
+                counter[w] += 1
+
+    # 追蹤關鍵字權重加倍，確保一定出現在雲中
+    kw_stats = (
+        db.query(KeywordMatch.keyword, func.sum(KeywordMatch.frequency).label("freq"))
+        .join(Article, Article.id == KeywordMatch.article_id)
+        .filter(KeywordMatch.keyword.in_(current_kws), Article.crawled_at >= cutoff)
+        .group_by(KeywordMatch.keyword)
+        .all()
+    )
+    for row in kw_stats:
+        counter[row.keyword] += row.freq * 2
+
+    words_list = [{"text": w, "weight": c} for w, c in counter.most_common(limit)]
+    return words_list
+
+
 # ── 熱門議題 ────────────────────────────────────────────────────────────────
 
 
@@ -345,7 +405,7 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
           padding: 20px; margin-bottom: 24px; }
   .card h2 { font-size: 1rem; font-weight: 600; margin-bottom: 16px;
              border-left: 3px solid #4f46e5; padding-left: 10px; }
-  #wc-canvas { width: 100%; height: 320px; }
+  #wc-canvas { width: 100%; height: 400px; }
   .topics-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
   .topic-card { border: 1px solid #e5e7eb; border-radius: 8px; padding: 14px; }
   .topic-card h3 { font-size: 1rem; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
@@ -532,9 +592,10 @@ async function reload() {
   document.getElementById('stats').innerHTML = '<div class="loading">載入中…</div>';
   document.getElementById('topics').innerHTML = '<div class="loading">載入中…</div>';
 
-  const [kwStats, topics] = await Promise.all([
+  const [kwStats, topics, wcData] = await Promise.all([
     fetch(`/api/v1/keywords/stats?hours=${hours}`).then(r => r.json()),
     fetch(`/api/v1/topics?hours=${hours}&top_articles=5`).then(r => r.json()),
+    fetch(`/api/v1/wordcloud-data?hours=${hours}&limit=80`).then(r => r.json()),
   ]);
 
   // Stats bar
@@ -546,20 +607,22 @@ async function reload() {
     <div class="stat"><div class="num">${totalFreq}</div><div class="lbl">關鍵字出現次數</div></div>
   `;
 
-  // Word cloud
+  // Word cloud（標題分詞）
   const canvas = document.getElementById('wc-canvas');
   canvas.width = canvas.offsetWidth;
-  canvas.height = 320;
-  const maxFreq = Math.max(...kwStats.map(k => k.total_frequency), 1);
-  const words = kwStats.map(k => [k.keyword, Math.round(30 + (k.total_frequency / maxFreq) * 70)]);
+  canvas.height = 400;
+  const maxW = Math.max(...wcData.map(w => w.weight), 1);
+  const words = wcData.map(w => [w.text, Math.round(14 + (w.weight / maxW) * 66)]);
   WordCloud(canvas, {
     list: words,
-    gridSize: 14,
-    weightFactor: 2.2,
+    gridSize: 8,
+    weightFactor: 1.8,
     fontFamily: 'sans-serif',
-    color: () => `hsl(${Math.floor(Math.random()*60+220)},70%,50%)`,
+    color: () => `hsl(${Math.floor(Math.random()*80+200)},65%,45%)`,
     backgroundColor: '#fff',
-    rotateRatio: 0.3,
+    rotateRatio: 0.25,
+    minSize: 10,
+    shuffle: true,
   });
 
   // Topics

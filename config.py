@@ -4,7 +4,7 @@ from typing import List
 
 class Settings(BaseSettings):
     # 預設關鍵字，可透過 .env 或 API 動態修改
-    default_keywords: List[str] = ["AI", "ChatGPT", "台灣", "選舉", "房價"]
+    default_keywords: List[str] = ["運動", "訓練", "體育", "教練"]
 
     # PTT 看板清單
     ptt_boards: List[str] = ["Gossiping", "Stock", "Tech_Job", "HatePolitics", "NBA"]
