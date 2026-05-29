@@ -89,7 +89,7 @@ def run_ptt_crawl(keywords: List[str], boards: List[str] = None, fetch_detail: b
                 all_articles: List[Dict] = []
                 # 各關鍵字搜尋
                 for kw in keywords:
-                    arts = ptt_crawler.search_board_by_keyword(board, kw, max_pages=20, days_back=14)
+                    arts = ptt_crawler.search_board_by_keyword(board, kw, max_pages=60, days_back=60)
                     all_articles.extend(arts)
 
                 # 去重

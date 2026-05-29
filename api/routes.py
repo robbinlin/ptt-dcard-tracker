@@ -415,8 +415,9 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
         <label style="font-size:.85rem">時間範圍</label>
         <select id="hours-select" onchange="reload()">
           <option value="168">最近 1 週</option>
-          <option value="336" selected>最近 2 週</option>
+          <option value="336">最近 2 週</option>
           <option value="720">最近 30 天</option>
+          <option value="1440" selected>最近 60 天</option>
         </select>
       </div>
     </div>
@@ -527,7 +528,7 @@ async function triggerCrawl() {
 async function reload() {
   const hours = document.getElementById('hours-select').value;
   document.getElementById('period-label').textContent =
-    hours == 168 ? '1 週' : hours == 336 ? '2 週' : '30 天';
+    hours == 168 ? '1 週' : hours == 336 ? '2 週' : hours == 720 ? '30 天' : '60 天';
   document.getElementById('stats').innerHTML = '<div class="loading">載入中…</div>';
   document.getElementById('topics').innerHTML = '<div class="loading">載入中…</div>';
 
