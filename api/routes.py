@@ -353,12 +353,28 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
   .stat .lbl { font-size: 0.75rem; color: #6b7280; }
   select { padding: 6px 10px; border: 1px solid #d1d5db; border-radius: 6px;
            font-size: 0.85rem; cursor: pointer; }
+  .btn-crawl { background: #4f46e5; color: #fff; border: none; border-radius: 6px;
+               padding: 8px 18px; font-size: 0.85rem; cursor: pointer; font-weight: 600;
+               display: flex; align-items: center; gap: 6px; transition: background .15s; }
+  .btn-crawl:hover { background: #4338ca; }
+  .btn-crawl:disabled { background: #a5b4fc; cursor: not-allowed; }
+  #crawl-status { font-size: 0.8rem; color: #6b7280; margin-top: 6px; min-height: 18px; }
 </style>
 </head>
 <body>
 <header>
-  <h1>PTT / Dcard 熱門議題追蹤器</h1>
-  <p>依關鍵字分析過去 <span id="period-label">2 週</span> 的熱門文章</p>
+  <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px">
+    <div>
+      <h1>PTT / Dcard 熱門議題追蹤器</h1>
+      <p>依關鍵字分析過去 <span id="period-label">2 週</span> 的熱門文章</p>
+    </div>
+    <div style="text-align:right">
+      <button class="btn-crawl" id="crawl-btn" onclick="triggerCrawl()">
+        <span id="crawl-icon">🔄</span> 立即爬取
+      </button>
+      <div id="crawl-status"></div>
+    </div>
+  </div>
 </header>
 <div class="container">
   <div class="card">
@@ -388,6 +404,31 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
 </div>
 
 <script>
+async function triggerCrawl() {
+  const btn = document.getElementById('crawl-btn');
+  const status = document.getElementById('crawl-status');
+  btn.disabled = true;
+  document.getElementById('crawl-icon').textContent = '⏳';
+  status.textContent = '爬取中，請稍候…';
+
+  try {
+    const res = await fetch('/api/v1/crawl/trigger', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({})
+    });
+    const data = await res.json();
+    status.textContent = `✅ 已啟動（關鍵字：${data.keywords.join('、')}）`;
+    // 等 30 秒後自動刷新資料
+    setTimeout(() => { reload(); }, 30000);
+  } catch(e) {
+    status.textContent = '❌ 爬取失敗，請確認伺服器狀態';
+  } finally {
+    btn.disabled = false;
+    document.getElementById('crawl-icon').textContent = '🔄';
+  }
+}
+
 async function reload() {
   const hours = document.getElementById('hours-select').value;
   document.getElementById('period-label').textContent =
