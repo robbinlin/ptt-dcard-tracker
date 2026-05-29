@@ -64,8 +64,14 @@ def list_articles(
     offset: int = Query(0),
     db: Session = Depends(get_db),
 ):
-    """取得熱門文章列表，依 hot_score 降序排列"""
-    q = db.query(Article)
+    """取得熱門文章列表，依 hot_score 降序排列（只含目前追蹤關鍵字）"""
+    current_kws = settings.default_keywords
+    q = (
+        db.query(Article)
+        .join(KeywordMatch, KeywordMatch.article_id == Article.id)
+        .filter(KeywordMatch.keyword.in_(current_kws))
+        .distinct()
+    )
 
     if source:
         q = q.filter(Article.source == source)
@@ -82,7 +88,6 @@ def list_articles(
 
     if hours > 0:
         cutoff = datetime.now(timezone.utc).timestamp() - hours * 3600
-        # SQLite 相容寫法
         q = q.filter(Article.crawled_at >= datetime.fromtimestamp(cutoff, tz=timezone.utc))
 
     total = q.count()
@@ -105,11 +110,17 @@ def trending_articles(
     hours: int = Query(24),
     db: Session = Depends(get_db),
 ):
-    """取得綜合熱門排行（跨 PTT + Dcard）"""
+    """取得綜合熱門排行（跨 PTT + Dcard，只含目前追蹤關鍵字）"""
     cutoff = datetime.now(timezone.utc).timestamp() - hours * 3600
+    current_kws = settings.default_keywords
     articles = (
         db.query(Article)
-        .filter(Article.crawled_at >= datetime.fromtimestamp(cutoff, tz=timezone.utc))
+        .join(KeywordMatch, KeywordMatch.article_id == Article.id)
+        .filter(
+            KeywordMatch.keyword.in_(current_kws),
+            Article.crawled_at >= datetime.fromtimestamp(cutoff, tz=timezone.utc),
+        )
+        .distinct()
         .order_by(desc(Article.hot_score))
         .limit(limit)
         .all()
@@ -142,28 +153,26 @@ def keyword_stats(
     hours: int = Query(24),
     db: Session = Depends(get_db),
 ):
-    """各關鍵字的文章數與總頻率統計"""
+    """各關鍵字的文章數與總頻率統計（只含目前追蹤關鍵字）"""
     cutoff = datetime.now(timezone.utc).timestamp() - hours * 3600
-    article_ids = [
-        a.id for a in db.query(Article.id)
-        .filter(Article.crawled_at >= datetime.fromtimestamp(cutoff, tz=timezone.utc))
-        .all()
-    ]
-    if not article_ids:
-        return []
-
-    from sqlalchemy import func
+    current_kws = settings.default_keywords
     rows = (
         db.query(
             KeywordMatch.keyword,
             func.count(KeywordMatch.article_id).label("article_count"),
             func.sum(KeywordMatch.frequency).label("total_frequency"),
         )
-        .filter(KeywordMatch.article_id.in_(article_ids))
+        .join(Article, Article.id == KeywordMatch.article_id)
+        .filter(
+            KeywordMatch.keyword.in_(current_kws),
+            Article.crawled_at >= datetime.fromtimestamp(cutoff, tz=timezone.utc),
+        )
         .group_by(KeywordMatch.keyword)
         .order_by(desc("total_frequency"))
         .all()
     )
+    if not rows:
+        return []
     return [
         {"keyword": r.keyword, "article_count": r.article_count, "total_frequency": r.total_frequency}
         for r in rows
@@ -261,12 +270,13 @@ def get_topics(
     top_articles: int = Query(5, description="每個議題顯示前 N 篇文章"),
     db: Session = Depends(get_db),
 ):
-    """各關鍵字的熱門議題摘要，含文章數、總分與代表文章"""
+    """各關鍵字的熱門議題摘要（只含目前追蹤關鍵字）"""
     cutoff = datetime.fromtimestamp(
         datetime.now(timezone.utc).timestamp() - hours * 3600, tz=timezone.utc
     )
+    current_kws = settings.default_keywords
 
-    # 關鍵字統計
+    # 關鍵字統計（限定目前關鍵字）
     rows = (
         db.query(
             KeywordMatch.keyword,
@@ -274,7 +284,10 @@ def get_topics(
             func.sum(KeywordMatch.frequency).label("total_frequency"),
         )
         .join(Article, Article.id == KeywordMatch.article_id)
-        .filter(Article.crawled_at >= cutoff)
+        .filter(
+            KeywordMatch.keyword.in_(current_kws),
+            Article.crawled_at >= cutoff,
+        )
         .group_by(KeywordMatch.keyword)
         .order_by(desc("total_frequency"))
         .all()
