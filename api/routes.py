@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, Query, HTTPException, BackgroundTasks
+from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
-from sqlalchemy import or_, desc
+from sqlalchemy import or_, desc, func
 from typing import List, Optional
 from datetime import datetime, timezone
 from pydantic import BaseModel
@@ -249,3 +250,210 @@ def reload_dcard_cookies():
     from crawlers.dcard import reload_cookies
     reload_cookies()
     return {"message": "Dcard cookie 已重新載入"}
+
+
+# ── 熱門議題 ────────────────────────────────────────────────────────────────
+
+
+@router.get("/topics", tags=["熱門議題"])
+def get_topics(
+    hours: int = Query(336, description="統計最近 N 小時（預設 336 = 2 週）"),
+    top_articles: int = Query(5, description="每個議題顯示前 N 篇文章"),
+    db: Session = Depends(get_db),
+):
+    """各關鍵字的熱門議題摘要，含文章數、總分與代表文章"""
+    cutoff = datetime.fromtimestamp(
+        datetime.now(timezone.utc).timestamp() - hours * 3600, tz=timezone.utc
+    )
+
+    # 關鍵字統計
+    rows = (
+        db.query(
+            KeywordMatch.keyword,
+            func.count(KeywordMatch.article_id).label("article_count"),
+            func.sum(KeywordMatch.frequency).label("total_frequency"),
+        )
+        .join(Article, Article.id == KeywordMatch.article_id)
+        .filter(Article.crawled_at >= cutoff)
+        .group_by(KeywordMatch.keyword)
+        .order_by(desc("total_frequency"))
+        .all()
+    )
+
+    topics = []
+    for row in rows:
+        # 該關鍵字下熱門文章
+        arts = (
+            db.query(Article)
+            .join(KeywordMatch, KeywordMatch.article_id == Article.id)
+            .filter(KeywordMatch.keyword == row.keyword, Article.crawled_at >= cutoff)
+            .order_by(desc(Article.hot_score))
+            .limit(top_articles)
+            .all()
+        )
+        topics.append({
+            "keyword": row.keyword,
+            "article_count": row.article_count,
+            "total_frequency": row.total_frequency,
+            "top_articles": [
+                {
+                    "id": a.id,
+                    "title": a.title,
+                    "url": a.url,
+                    "source": a.source,
+                    "board": a.board,
+                    "hot_score": a.hot_score,
+                    "published_at": a.published_at,
+                }
+                for a in arts
+            ],
+        })
+    return topics
+
+
+# ── Dashboard ───────────────────────────────────────────────────────────────
+
+_DASHBOARD_HTML = """<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PTT / Dcard 熱門議題追蹤器</title>
+<script src="https://cdn.jsdelivr.net/npm/wordcloud@1.2.2/src/wordcloud2.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+         background: #f4f6f9; color: #333; }
+  header { background: #1a1a2e; color: #fff; padding: 20px 32px; }
+  header h1 { font-size: 1.4rem; font-weight: 600; }
+  header p { font-size: 0.85rem; opacity: 0.7; margin-top: 4px; }
+  .container { max-width: 1100px; margin: 0 auto; padding: 24px 16px; }
+  .card { background: #fff; border-radius: 10px; box-shadow: 0 1px 4px rgba(0,0,0,.08);
+          padding: 20px; margin-bottom: 24px; }
+  .card h2 { font-size: 1rem; font-weight: 600; margin-bottom: 16px;
+             border-left: 3px solid #4f46e5; padding-left: 10px; }
+  #wc-canvas { width: 100%; height: 320px; }
+  .topics-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+  .topic-card { border: 1px solid #e5e7eb; border-radius: 8px; padding: 14px; }
+  .topic-card h3 { font-size: 1rem; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
+  .badge { background: #ede9fe; color: #5b21b6; font-size: 0.75rem;
+           padding: 2px 8px; border-radius: 999px; }
+  .topic-meta { font-size: 0.78rem; color: #6b7280; margin-bottom: 10px; }
+  .article-list { list-style: none; }
+  .article-list li { padding: 5px 0; border-top: 1px solid #f3f4f6; font-size: 0.82rem; }
+  .article-list a { color: #4f46e5; text-decoration: none; }
+  .article-list a:hover { text-decoration: underline; }
+  .src-ptt { color: #16a34a; font-weight: 600; }
+  .src-dcard { color: #d97706; font-weight: 600; }
+  .score { color: #9ca3af; font-size: 0.75rem; margin-left: 4px; }
+  .loading { text-align: center; padding: 40px; color: #9ca3af; }
+  .stat-bar { display: flex; gap: 24px; flex-wrap: wrap; margin-bottom: 8px; }
+  .stat { background: #f9fafb; border-radius: 6px; padding: 10px 16px; text-align: center; }
+  .stat .num { font-size: 1.4rem; font-weight: 700; color: #4f46e5; }
+  .stat .lbl { font-size: 0.75rem; color: #6b7280; }
+  select { padding: 6px 10px; border: 1px solid #d1d5db; border-radius: 6px;
+           font-size: 0.85rem; cursor: pointer; }
+</style>
+</head>
+<body>
+<header>
+  <h1>PTT / Dcard 熱門議題追蹤器</h1>
+  <p>依關鍵字分析過去 <span id="period-label">2 週</span> 的熱門文章</p>
+</header>
+<div class="container">
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <h2 style="border:none;padding:0;margin:0">📊 總覽</h2>
+      <div style="display:flex;gap:8px;align-items:center">
+        <label style="font-size:.85rem">時間範圍</label>
+        <select id="hours-select" onchange="reload()">
+          <option value="168">最近 1 週</option>
+          <option value="336" selected>最近 2 週</option>
+          <option value="720">最近 30 天</option>
+        </select>
+      </div>
+    </div>
+    <div class="stat-bar" id="stats"><div class="loading">載入中…</div></div>
+  </div>
+
+  <div class="card">
+    <h2>☁️ 關鍵字文字雲</h2>
+    <canvas id="wc-canvas"></canvas>
+  </div>
+
+  <div class="card">
+    <h2>🔥 熱門議題</h2>
+    <div class="topics-grid" id="topics"><div class="loading">載入中…</div></div>
+  </div>
+</div>
+
+<script>
+async function reload() {
+  const hours = document.getElementById('hours-select').value;
+  document.getElementById('period-label').textContent =
+    hours == 168 ? '1 週' : hours == 336 ? '2 週' : '30 天';
+  document.getElementById('stats').innerHTML = '<div class="loading">載入中…</div>';
+  document.getElementById('topics').innerHTML = '<div class="loading">載入中…</div>';
+
+  const [kwStats, topics] = await Promise.all([
+    fetch(`/api/v1/keywords/stats?hours=${hours}`).then(r => r.json()),
+    fetch(`/api/v1/topics?hours=${hours}&top_articles=5`).then(r => r.json()),
+  ]);
+
+  // Stats bar
+  const totalArticles = topics.reduce((s, t) => s + t.article_count, 0);
+  const totalFreq = kwStats.reduce((s, k) => s + k.total_frequency, 0);
+  document.getElementById('stats').innerHTML = `
+    <div class="stat"><div class="num">${topics.length}</div><div class="lbl">追蹤關鍵字</div></div>
+    <div class="stat"><div class="num">${totalArticles}</div><div class="lbl">相關文章數</div></div>
+    <div class="stat"><div class="num">${totalFreq}</div><div class="lbl">關鍵字出現次數</div></div>
+  `;
+
+  // Word cloud
+  const canvas = document.getElementById('wc-canvas');
+  canvas.width = canvas.offsetWidth;
+  canvas.height = 320;
+  const maxFreq = Math.max(...kwStats.map(k => k.total_frequency), 1);
+  const words = kwStats.map(k => [k.keyword, Math.round(30 + (k.total_frequency / maxFreq) * 70)]);
+  WordCloud(canvas, {
+    list: words,
+    gridSize: 14,
+    weightFactor: 2.2,
+    fontFamily: 'sans-serif',
+    color: () => `hsl(${Math.floor(Math.random()*60+220)},70%,50%)`,
+    backgroundColor: '#fff',
+    rotateRatio: 0.3,
+  });
+
+  // Topics
+  if (!topics.length) {
+    document.getElementById('topics').innerHTML = '<p style="color:#9ca3af">尚無資料，請先觸發爬取。</p>';
+    return;
+  }
+  document.getElementById('topics').innerHTML = topics.map(t => `
+    <div class="topic-card">
+      <h3>${t.keyword} <span class="badge">${t.article_count} 篇</span></h3>
+      <div class="topic-meta">出現 ${t.total_frequency} 次</div>
+      <ul class="article-list">
+        ${t.top_articles.map(a => `
+          <li>
+            <span class="src-${a.source}">[${a.source.toUpperCase()}]</span>
+            <a href="${a.url}" target="_blank">${a.title.length > 36 ? a.title.slice(0,36)+'…' : a.title}</a>
+            <span class="score">⭐${a.hot_score.toFixed(1)}</span>
+          </li>
+        `).join('')}
+      </ul>
+    </div>
+  `).join('');
+}
+
+reload();
+</script>
+</body>
+</html>"""
+
+
+@router.get("/dashboard", response_class=HTMLResponse, tags=["Dashboard"], include_in_schema=False)
+def dashboard():
+    """熱門議題 Dashboard（文字雲 + 議題列表）"""
+    return _DASHBOARD_HTML

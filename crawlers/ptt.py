@@ -5,6 +5,7 @@ from typing import List, Dict, Optional
 import re
 import time
 import logging
+from datetime import timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -44,19 +45,23 @@ def _parse_push_count(push_str: str) -> int:
 
 
 def _parse_date(date_str: str) -> Optional[datetime]:
-    """解析 PTT 日期格式：'5/28' 或 'Jan 01'"""
+    """解析 PTT 日期格式：'5/28'，補年份並修正跨年情況"""
     now = datetime.now(timezone.utc)
     try:
-        # 格式：M/D（無年份，補當年）
         m, d = map(int, date_str.strip().split("/"))
-        return datetime(now.year, m, d, tzinfo=timezone.utc)
+        dt = datetime(now.year, m, d, tzinfo=timezone.utc)
+        # 若日期在未來（如現在1月、文章標示12月），往前補一年
+        if dt > now + timedelta(days=1):
+            dt = dt.replace(year=now.year - 1)
+        return dt
     except Exception:
         pass
     return None
 
 
-def crawl_board(board: str, max_pages: int = 3) -> List[Dict]:
-    """爬取指定 PTT 看板的文章列表"""
+def crawl_board(board: str, max_pages: int = 30, days_back: int = 14) -> List[Dict]:
+    """爬取指定 PTT 看板的文章列表，最多回溯 days_back 天"""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
     articles = []
     url = f"{PTT_BASE}/bbs/{board}/index.html"
 
@@ -76,6 +81,7 @@ def crawl_board(board: str, max_pages: int = 3) -> List[Dict]:
                     prev_link = a
                     break
 
+        page_too_old = False
         for row in soup.select("div.r-ent"):
             try:
                 title_tag = row.select_one("div.title a")
@@ -83,10 +89,13 @@ def crawl_board(board: str, max_pages: int = 3) -> List[Dict]:
                     continue  # 已刪除文章
 
                 push_tag = row.select_one("div.nrec span")
-                meta_tag = row.select_one("div.meta")
-
                 date_tag = row.select_one("div.date")
                 author_tag = row.select_one("div.author")
+                pub = _parse_date(date_tag.text.strip()) if date_tag else None
+
+                if pub and pub < cutoff:
+                    page_too_old = True
+                    continue
 
                 href = title_tag["href"]
                 article_id = href.split("/")[-1].replace(".html", "")
@@ -99,19 +108,18 @@ def crawl_board(board: str, max_pages: int = 3) -> List[Dict]:
                     "url": PTT_BASE + href,
                     "push_count": _parse_push_count(push_tag.text if push_tag else "0"),
                     "author": author_tag.text.strip() if author_tag else "",
-                    "published_at": _parse_date(date_tag.text.strip()) if date_tag else None,
-                    "comment_count": 0,  # 需進入文章頁才能取得
+                    "published_at": pub,
+                    "comment_count": 0,
                     "reaction_count": 0,
                     "content": "",
                 })
             except Exception as e:
                 logger.debug(f"解析 PTT 文章列表列失敗: {e}")
 
-        if prev_link and prev_link.get("href"):
-            url = PTT_BASE + prev_link["href"]
-            time.sleep(0.5)
-        else:
+        if page_too_old or not (prev_link and prev_link.get("href")):
             break
+        url = PTT_BASE + prev_link["href"]
+        time.sleep(0.5)
 
     return articles
 
@@ -142,8 +150,9 @@ def crawl_article_detail(article: Dict) -> Dict:
     return article
 
 
-def search_board_by_keyword(board: str, keyword: str, max_pages: int = 5) -> List[Dict]:
-    """在特定看板以關鍵字搜尋（PTT 使用標題搜尋 URL）"""
+def search_board_by_keyword(board: str, keyword: str, max_pages: int = 20, days_back: int = 14) -> List[Dict]:
+    """在特定看板以關鍵字搜尋，最多回溯 days_back 天"""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
     articles = []
     url = f"{PTT_BASE}/bbs/{board}/search?q={requests.utils.quote(keyword)}"
 
@@ -154,6 +163,7 @@ def search_board_by_keyword(board: str, keyword: str, max_pages: int = 5) -> Lis
 
         soup = BeautifulSoup(resp.text, "lxml")
 
+        page_too_old = False
         for row in soup.select("div.r-ent"):
             try:
                 title_tag = row.select_one("div.title a")
@@ -163,6 +173,12 @@ def search_board_by_keyword(board: str, keyword: str, max_pages: int = 5) -> Lis
                 push_tag = row.select_one("div.nrec span")
                 date_tag = row.select_one("div.date")
                 author_tag = row.select_one("div.author")
+                pub = _parse_date(date_tag.text.strip()) if date_tag else None
+
+                if pub and pub < cutoff:
+                    page_too_old = True
+                    continue
+
                 href = title_tag["href"]
                 article_id = href.split("/")[-1].replace(".html", "")
 
@@ -174,7 +190,7 @@ def search_board_by_keyword(board: str, keyword: str, max_pages: int = 5) -> Lis
                     "url": PTT_BASE + href,
                     "push_count": _parse_push_count(push_tag.text if push_tag else "0"),
                     "author": author_tag.text.strip() if author_tag else "",
-                    "published_at": _parse_date(date_tag.text.strip()) if date_tag else None,
+                    "published_at": pub,
                     "comment_count": 0,
                     "reaction_count": 0,
                     "content": "",
@@ -182,17 +198,15 @@ def search_board_by_keyword(board: str, keyword: str, max_pages: int = 5) -> Lis
             except Exception as e:
                 logger.debug(f"解析 PTT 搜尋列表失敗: {e}")
 
-        # 下一頁
         prev_link = None
         for a in soup.select("a.btn.wide"):
             if "上頁" in a.text:
                 prev_link = a
                 break
 
-        if prev_link and prev_link.get("href"):
-            url = PTT_BASE + prev_link["href"]
-            time.sleep(0.5)
-        else:
+        if page_too_old or not (prev_link and prev_link.get("href")):
             break
+        url = PTT_BASE + prev_link["href"]
+        time.sleep(0.5)
 
     return articles
