@@ -359,6 +359,24 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
   .btn-crawl:hover { background: #4338ca; }
   .btn-crawl:disabled { background: #a5b4fc; cursor: not-allowed; }
   #crawl-status { font-size: 0.8rem; color: #6b7280; margin-top: 6px; min-height: 18px; }
+  .kw-list { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; min-height: 32px; }
+  .kw-tag { background: #ede9fe; color: #5b21b6; border-radius: 999px; padding: 4px 12px;
+            font-size: 0.85rem; display: flex; align-items: center; gap: 6px; }
+  .kw-tag button { background: none; border: none; color: #7c3aed; cursor: pointer;
+                   font-size: 1rem; line-height: 1; padding: 0; }
+  .kw-tag button:hover { color: #dc2626; }
+  .kw-input-row { display: flex; gap: 8px; }
+  .kw-input { flex: 1; padding: 7px 12px; border: 1px solid #d1d5db; border-radius: 6px;
+              font-size: 0.85rem; }
+  .kw-input:focus { outline: 2px solid #4f46e5; border-color: transparent; }
+  .btn-add { background: #4f46e5; color: #fff; border: none; border-radius: 6px;
+             padding: 7px 16px; font-size: 0.85rem; cursor: pointer; font-weight: 600; }
+  .btn-add:hover { background: #4338ca; }
+  .btn-save { background: #059669; color: #fff; border: none; border-radius: 6px;
+              padding: 7px 16px; font-size: 0.85rem; cursor: pointer; font-weight: 600; }
+  .btn-save:hover { background: #047857; }
+  .btn-save:disabled { background: #6ee7b7; cursor: not-allowed; }
+  #kw-msg { font-size: 0.8rem; margin-top: 8px; min-height: 18px; }
 </style>
 </head>
 <body>
@@ -393,6 +411,18 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
   </div>
 
   <div class="card">
+    <h2>⚙️ 追蹤關鍵字</h2>
+    <div class="kw-list" id="kw-list"><div class="loading">載入中…</div></div>
+    <div class="kw-input-row">
+      <input class="kw-input" id="kw-input" placeholder="輸入新關鍵字…"
+             onkeydown="if(event.key==='Enter') addKeyword()">
+      <button class="btn-add" onclick="addKeyword()">＋ 新增</button>
+      <button class="btn-save" id="kw-save" onclick="saveKeywords()">儲存</button>
+    </div>
+    <div id="kw-msg"></div>
+  </div>
+
+  <div class="card">
     <h2>☁️ 關鍵字文字雲</h2>
     <canvas id="wc-canvas"></canvas>
   </div>
@@ -404,6 +434,58 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
 </div>
 
 <script>
+let _keywords = [];
+
+function renderKeywords() {
+  document.getElementById('kw-list').innerHTML = _keywords.length
+    ? _keywords.map((kw, i) => `
+        <span class="kw-tag">${kw}
+          <button onclick="removeKeyword(${i})" title="刪除">×</button>
+        </span>`).join('')
+    : '<span style="color:#9ca3af;font-size:.85rem">尚無關鍵字</span>';
+}
+
+function removeKeyword(i) {
+  _keywords.splice(i, 1);
+  renderKeywords();
+}
+
+function addKeyword() {
+  const input = document.getElementById('kw-input');
+  const kw = input.value.trim();
+  if (!kw) return;
+  if (_keywords.includes(kw)) { input.value = ''; return; }
+  _keywords.push(kw);
+  input.value = '';
+  renderKeywords();
+}
+
+async function loadKeywords() {
+  const res = await fetch('/api/v1/config/keywords');
+  const data = await res.json();
+  _keywords = data.keywords || [];
+  renderKeywords();
+}
+
+async function saveKeywords() {
+  const btn = document.getElementById('kw-save');
+  const msg = document.getElementById('kw-msg');
+  btn.disabled = true;
+  try {
+    await fetch('/api/v1/config/keywords', {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({keywords: _keywords})
+    });
+    msg.innerHTML = '<span style="color:#059669">✅ 已儲存</span>';
+    setTimeout(() => { msg.textContent = ''; }, 3000);
+  } catch(e) {
+    msg.innerHTML = '<span style="color:#dc2626">❌ 儲存失敗</span>';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 async function triggerCrawl() {
   const btn = document.getElementById('crawl-btn');
   const status = document.getElementById('crawl-status');
@@ -488,6 +570,7 @@ async function reload() {
   `).join('');
 }
 
+loadKeywords();
 reload();
 </script>
 </body>
