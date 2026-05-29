@@ -17,11 +17,18 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 啟動時初始化資料庫
+    import threading
+    from services.crawler_service import run_full_crawl
+
     init_db()
     logger.info("資料庫初始化完成")
+
+    # 啟動時在背景執行一次完整爬取
+    threading.Thread(target=run_full_crawl, daemon=True).start()
+    logger.info("啟動爬取已在背景開始")
+
     yield
-    # 關閉時停止排程
+
     from services.scheduler import stop_scheduler
     stop_scheduler()
 
